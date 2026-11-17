@@ -20,7 +20,12 @@
   const BOARD_COLORS = ['#1f6fb5', '#24507d', '#2e8b57', '#0f766e', '#7a4fa3', '#b23a48', '#c0632b', '#8a6d1f', '#475569'];
   const USER_COLORS = ['#2f6f9f', '#7a4fa3', '#2e8b57', '#c0632b', '#b23a48', '#3f7f7f', '#8a6d1f', '#5560c4'];
   const LABEL_COLORS = ['#c9372c', '#e2711d', '#d4a72c', '#2e8b57', '#2f6f9f', '#7a4fa3', '#0f766e', '#64748b'];
-  const ROLE_NAMES = { owner: 'Dono', editor: 'Editor', viewer: 'Leitor', admin: 'Administrador' };
+  const ROLE_NAMES = { owner: 'Dono', editor: 'Editor', viewer: 'Leitor', admin: 'Administrador', visitor: 'Visitante' };
+  const VIS = {
+    private: { label: 'Privado', icon: 'lock', desc: 'Só os membros do quadro veem.' },
+    workspace: { label: 'Área', icon: 'users', desc: 'Todos os membros da área veem (só leitura). Para editar, a pessoa precisa ser membro do quadro.' },
+    org: { label: 'Setor', icon: 'globe', desc: 'Todos os usuários do sistema veem (só leitura). Para editar, a pessoa precisa ser membro do quadro.' }
+  };
 
   // ------------------------------------------------------------------------
   // Estado
@@ -163,6 +168,8 @@
     minus: '<path d="M5 12h14"/>',
     form: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 3v3h6V3M9 11h6M9 15h4"/>',
     up: '<path d="m6 15 6-6 6 6"/>',
+    lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+    globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',
     down: '<path d="m6 9 6 6 6-6"/>',
     fit: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
     clip: '<path d="M21 11.5 12.5 20a5 5 0 0 1-7-7l9-9a3.5 3.5 0 0 1 5 5l-9 9a2 2 0 0 1-3-3l8-8"/>'
@@ -171,6 +178,13 @@
 
   const canEdit = () => ['admin', 'owner', 'editor'].includes(S.role);
   const canManage = () => ['admin', 'owner'].includes(S.role);
+  const isBoardMember = () => ['admin', 'owner', 'editor', 'viewer'].includes(S.role);
+  // Áreas de trabalho (atualização 07)
+  const areasOn = () => Array.isArray(S.workspaces);
+  const myWsRole = (w) => { const m = (S.wsMembers || []).find((x) => x.workspace_id === w && x.user_id === S.me.id); return m ? m.role : null; };
+  const canManageWs = (w) => !!S.me.is_admin || myWsRole(w) === 'admin';
+  const myWorkspaces = () => (S.workspaces || []).filter((w) => myWsRole(w.id));
+  const visChip = (v) => VIS[v] ? `<span class="role-chip" title="${esc(VIS[v].desc)}">${icon(VIS[v].icon, 12)} ${VIS[v].label}</span>` : '';
   const isEditing = () => {
     const a = document.activeElement;
     return !!(a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.closest('#app, #modal-root, #popover-root'));
@@ -334,6 +348,7 @@
     const me = S.me;
     if (!me) return;
     S.boards = await q(sb.from('boards').select('*').order('title'));
+    await loadWorkspaces();
     if (S.me !== me) return; // a sessão mudou durante o carregamento
     const asg = await q(sb.from('card_assignees').select('card_id').eq('user_id', me.id));
     const ids = uniq(asg.map((a) => a.card_id));
@@ -355,6 +370,58 @@
     renderHome();
   }
 
+  async function loadWorkspaces() {
+    const ws = await sb.from('workspaces').select('*').order('name');
+    S.workspaces = ws.error ? null : ws.data;
+    if (S.workspaces) {
+      const wm = await sb.from('workspace_members').select('*');
+      S.wsMembers = wm.error ? [] : wm.data;
+    }
+  }
+
+  function boardTile(b, sub) {
+    const v = VIS[b.visibility];
+    return `
+      <a class="board-tile ${b.archived ? 'archived' : ''}" href="#/b/${b.id}" style="background:${safeColor(b.color)}">
+        ${v ? `<span class="tile-vis" title="${esc(v.label)}: ${esc(v.desc)}">${icon(v.icon, 13)}</span>` : ''}
+        <div class="t">${esc(b.title)}</div>
+        <div class="d">${b.archived ? 'Arquivado' : esc(sub != null ? sub : (b.description || ''))}</div>
+      </a>`;
+  }
+
+  function renderAreasHome(boards) {
+    const mine = myWorkspaces();
+    const myIds = new Set(mine.map((w) => w.id));
+    const wsName = Object.fromEntries((S.workspaces || []).map((w) => [w.id, w.name]));
+    const others = boards.filter((b) => !myIds.has(b.workspace_id));
+    const count = (w) => (S.wsMembers || []).filter((m) => m.workspace_id === w).length;
+    return `
+      ${S.me.is_admin ? `<div class="row" style="justify-content:flex-end;margin:-6px 0 8px"><button class="btn sm" data-act="ws-new">${icon('plus', 14)} Nova área de trabalho</button></div>` : ''}
+      ${!mine.length ? '<div class="notice">Você ainda não participa de nenhuma área de trabalho. Peça ao administrador para incluí-lo em uma área; enquanto isso, você vê apenas os quadros em que foi adicionado.</div>' : ''}
+      ${mine.map((w) => {
+        const list = boards.filter((b) => b.workspace_id === w.id);
+        return `
+        <div class="ws-block">
+          <div class="ws-head">
+            <span class="ws-mark" style="background:${safeColor(w.color)}">${esc(initials(w.name))}</span>
+            <div style="min-width:0"><div class="ws-name">${esc(w.name)}</div><div class="small muted">${count(w.id)} membro(s)${myWsRole(w.id) === 'admin' ? ' · você administra esta área' : ''}</div></div>
+            <span class="spacer"></span>
+            <button class="btn sm" data-act="ws-open" data-id="${w.id}">${icon('users', 14)} ${canManageWs(w.id) ? 'Gerenciar' : 'Membros'}</button>
+          </div>
+          <div class="boards-grid">
+            ${list.map((b) => boardTile(b)).join('')}
+            <button class="board-tile new" data-act="new-board" data-ws="${w.id}">${icon('plus')} Criar quadro</button>
+          </div>
+        </div>`;
+      }).join('')}
+      ${others.length ? `
+        <div class="ws-block">
+          <div class="ws-head"><span class="ws-mark" style="background:#8590a2">${icon('eye', 14)}</span>
+            <div><div class="ws-name">Outros quadros que você vê</div><div class="small muted">Quadros de outras áreas em que você foi adicionado ou que estão visíveis para o setor</div></div></div>
+          <div class="boards-grid">${others.map((b) => boardTile(b, `Área: ${wsName[b.workspace_id] || '?'}`)).join('')}</div>
+        </div>` : ''}`;
+  }
+
   function renderHome() {
     if (!S.session || !S.me) return;
     const boards = S.boards.filter((b) => S.showArchivedBoards || !b.archived);
@@ -370,15 +437,12 @@
               <span class="spacer"></span>
               ${nArch ? `<button class="btn sm ghost" data-act="toggle-archived-boards">${S.showArchivedBoards ? 'Ocultar arquivados' : `Mostrar arquivados (${nArch})`}</button>` : ''}
             </h2>
+            ${areasOn() ? renderAreasHome(boards) : `
             <div class="boards-grid">
-              ${boards.map((b) => `
-                <a class="board-tile ${b.archived ? 'archived' : ''}" href="#/b/${b.id}" style="background:${safeColor(b.color)}">
-                  <div class="t">${esc(b.title)}</div>
-                  <div class="d">${b.archived ? 'Arquivado' : esc(b.description || '')}</div>
-                </a>`).join('')}
+              ${boards.map((b) => boardTile(b)).join('')}
               <button class="board-tile new" data-act="new-board">${icon('plus')} Criar novo quadro</button>
             </div>
-            ${!S.boards.length ? '<p class="empty">Você ainda não participa de nenhum quadro. Crie um novo ou peça para ser adicionado.</p>' : ''}
+            ${!S.boards.length ? '<p class="empty">Você ainda não participa de nenhum quadro. Crie um novo ou peça para ser adicionado.</p>' : ''}`}
           </section>
           <aside class="panel">
             <h2>${icon('user')} Minhas tarefas <span class="muted small" style="font-weight:500">${S.myTasks.length ? `(${S.myTasks.length})` : ''}</span></h2>
@@ -399,8 +463,25 @@
       </main>`;
   }
 
-  function openNewBoardModal() {
+  function visField(cur) {
+    return `
+      <div class="field"><span>Quem pode ver</span>
+        ${Object.entries(VIS).map(([k, v]) => `
+          <label class="choice"><input type="radio" name="visibility" value="${k}" ${cur === k ? 'checked' : ''}>
+            <div><b>${icon(v.icon, 13)} ${v.label}</b><div class="small muted">${esc(v.desc)}</div></div></label>`).join('')}
+      </div>`;
+  }
+  function wsField(cur) {
+    const opts = myWorkspaces();
+    if (cur && !opts.some((w) => w.id === cur)) opts.unshift((S.workspaces || []).find((w) => w.id === cur) || { id: cur, name: 'Área atual' });
+    return `<label class="field"><span>Área de trabalho</span><select class="select" name="workspace" required>
+      ${opts.map((w) => `<option value="${w.id}" ${w.id === cur ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select></label>`;
+  }
+
+  function openNewBoardModal(wsId) {
     let color = BOARD_COLORS[0];
+    if (areasOn() && !myWorkspaces().length) return toast('Você ainda não participa de nenhuma área de trabalho. Peça ao administrador para incluí-lo em uma área.', true);
+    const ws = wsId || (myWorkspaces()[0] || {}).id;
     openModal(`
       <div class="modal sm"><button class="icon-btn modal-close" data-act="close-modal">${icon('x')}</button>
       <div class="modal-body">
@@ -412,6 +493,7 @@
             <div class="color-row">${BOARD_COLORS.map((c) => `<button type="button" class="swatch ${c === color ? 'sel' : ''}" style="background:${c}" data-act="pick-swatch" data-color="${c}"></button>`).join('')}</div>
             <input type="hidden" name="color" value="${color}">
           </div>
+          ${areasOn() ? wsField(ws) + visField('workspace') : ''}
           <p class="small muted" style="line-height:1.5">O quadro já vem com as listas "A fazer", "Em andamento" e "Concluído" e algumas etiquetas padrão. Você pode alterá-las depois.</p>
           <div class="row"><button class="btn primary" type="submit">Criar quadro</button><button class="btn" type="button" data-act="close-modal">Cancelar</button></div>
         </form>
@@ -452,7 +534,8 @@
     Object.assign(S, { board, lists, cards, labels, members, cardLabels, assignees });
     S.stats = Object.fromEntries((stats || []).map((s) => [s.card_id, s]));
     const mine = members.find((m) => m.user_id === S.me.id);
-    S.role = S.me.is_admin ? 'admin' : (mine ? mine.role : null);
+    // Com áreas ativas, o administrador do sistema não tem papel especial no quadro.
+    S.role = mine ? mine.role : (S.me.is_admin && !('visibility' in board) ? 'admin' : 'visitor');
     // perfis novos que ainda não estão no cache
     const missing = members.map((m) => m.user_id).filter((u) => !S.profiles[u]);
     if (missing.length) await loadMe();
@@ -549,7 +632,8 @@
       <div class="board-view" style="background:linear-gradient(135deg, ${color} 0%, ${color}cc 100%)">
         <div class="board-head">
           <button class="board-title" data-act="drawer" data-view="settings" title="Configurações do quadro">${esc(b.title)}</button>
-          <span class="role-chip" title="Seu papel neste quadro">${ROLE_NAMES[S.role] || ''}</span>
+          <span class="role-chip" title="${S.role === 'visitor' ? 'Você vê este quadro pela visibilidade, mas não é membro. Para editar ou comentar, peça ao dono para adicioná-lo.' : 'Seu papel neste quadro'}">${ROLE_NAMES[S.role] || ''}</span>
+          ${visChip(b.visibility)}
           ${b.archived ? '<span class="role-chip" style="background:#f5cd47;color:#533f04">Arquivado</span>' : ''}
           <div class="spacer"></div>
           <div class="avatars hide-sm" style="margin-right:4px">${members.slice(0, 6).map((m) => avatar(m.user_id, 'sm')).join('')}${members.length > 6 ? `<span class="avatar sm" style="background:#44546f">+${members.length - 6}</span>` : ''}</div>
@@ -887,7 +971,10 @@
   function drawerSettings() {
     const b = S.board;
     if (!canManage()) {
-      return `<p style="font-weight:600;margin-top:0">${esc(b.title)}</p><p class="muted" style="line-height:1.5">${esc(b.description || 'Sem descrição.')}</p><div class="notice">Somente o dono do quadro ou o administrador pode alterar estas configurações.</div>`;
+      const wn = ((S.workspaces || []).find((w) => w.id === b.workspace_id) || {}).name;
+      return `<p style="font-weight:600;margin-top:0">${esc(b.title)}</p><p class="muted" style="line-height:1.5">${esc(b.description || 'Sem descrição.')}</p>
+        ${VIS[b.visibility] ? `<p class="small" style="line-height:1.6">${wn ? `<b>Área:</b> ${esc(wn)}<br>` : ''}<b>Visibilidade:</b> ${VIS[b.visibility].label}. ${esc(VIS[b.visibility].desc)}</p>` : ''}
+        <div class="notice">Somente o dono do quadro pode alterar estas configurações.</div>`;
     }
     return `
       <form data-submit="board-settings">
@@ -897,6 +984,7 @@
           <div class="color-row">${BOARD_COLORS.map((c) => `<button type="button" class="swatch ${c === b.color ? 'sel' : ''}" style="background:${c}" data-act="pick-swatch" data-color="${c}"></button>`).join('')}</div>
           <input type="hidden" name="color" value="${safeColor(b.color)}">
         </div>
+        ${'visibility' in b && areasOn() ? wsField(b.workspace_id) + visField(b.visibility) : ''}
         <button class="btn primary" type="submit">Salvar alterações</button>
       </form>
       <hr style="border:0;border-top:1px solid var(--line);margin:24px 0 16px">
@@ -918,6 +1006,8 @@
       case 'board_renamed': return `renomeou o quadro de ${T(d.from)} para ${T(d.to)}`;
       case 'board_archived': return 'arquivou o quadro';
       case 'board_restored': return 'restaurou o quadro';
+      case 'board_visibility': return `alterou quem pode ver o quadro de ${T((VIS[d.from] || {}).label || d.from)} para ${T((VIS[d.to] || {}).label || d.to)}`;
+      case 'board_workspace': return `moveu o quadro da área ${T(d.from)} para ${T(d.to)}`;
       case 'board_deleted': return `excluiu o quadro ${T(d.title)}`;
       case 'board_imported': return `importou este quadro do ${esc(d.source || 'Trello')} (${d.lists || 0} listas, ${d.cards || 0} cartões, ${d.items || 0} itens de checklist, ${d.comments || 0} comentários)`;
       case 'member_added': return `adicionou ${T(d.name)} ao quadro como ${role(d.role)}`;
@@ -1128,7 +1218,8 @@
             <div class="cm-section">
               <h4>${icon('comment')} Comentários e atividade
                 <button class="btn sm" style="margin-left:auto" data-act="toggle-details">${cd.showDetails ? 'Ocultar detalhes' : 'Mostrar detalhes'}</button></h4>
-              <form data-submit="add-comment" class="feed-item">
+              ${S.role === 'visitor' ? '<p class="small muted" style="margin:0 0 10px">Visitantes leem os comentários, mas não comentam. Peça ao dono do quadro para adicioná-lo como membro.</p>' : ''}
+              <form data-submit="add-comment" class="feed-item" ${S.role === 'visitor' ? 'hidden' : ''}>
                 ${avatar(S.me.id)}
                 <div style="flex:1">
                   <textarea class="textarea" name="body" rows="2" style="min-height:44px" placeholder="Escreva um comentário..." maxlength="5000" data-ctrl-submit></textarea>
@@ -1303,7 +1394,9 @@
   async function showAdmin() {
     await loadMe();
     const cfg = await q(sb.from('app_config').select('*').eq('id', 1).maybeSingle());
-    const boards = await q(sb.from('boards').select('id,title,archived'));
+    await loadWorkspaces();
+    const ab = areasOn() ? await sb.rpc('admin_boards') : { error: true };
+    const boards = ab.error ? await q(sb.from('boards').select('id,title,archived')) : ab.data;
     const us = await sb.rpc('attachments_usage');
     const usage = us.error ? null : (Array.isArray(us.data) ? us.data[0] : us.data);
     const limit = (S.admin && S.admin.auditLimit) || 30;
@@ -1312,7 +1405,7 @@
     const tp = await sb.from('card_templates').select('*').order('name');
     const ct = await sb.from('catalogs').select('*').order('name');
     if (!ct.error) S.catalogs = ct.data;
-    S.admin = { catalogs: ct.error ? null : ct.data, templates: tp.error ? null : tp.data, cfg: cfg || {}, boards, usage, prereg: pr.error ? null : pr.data, audit: au.error ? null : au.data, auditLimit: limit };
+    S.admin = { allBoards: ab.error ? null : ab.data, catalogs: ct.error ? null : ct.data, templates: tp.error ? null : tp.data, cfg: cfg || {}, boards, usage, prereg: pr.error ? null : pr.data, audit: au.error ? null : au.data, auditLimit: limit };
     renderAdmin();
   }
 
@@ -1366,9 +1459,10 @@
                 </td>
               </tr>`).join('')}</tbody>
           </table></div>
-          <p class="small muted" style="line-height:1.5;margin-bottom:0">Desativar bloqueia o acesso imediatamente, mas preserva o histórico do servidor. Administradores enxergam e gerenciam todos os quadros.</p>
+          <p class="small muted" style="line-height:1.5;margin-bottom:0">Desativar bloqueia o acesso imediatamente, mas preserva o histórico do servidor. Administradores gerenciam usuários, áreas, templates e cadastros, mas só veem o conteúdo dos quadros em que participam.</p>
           ${renderPreRegs()}
         </section>
+        ${renderAreasAdmin()}
         ${renderTemplatesAdmin()}
         ${renderCatalogsAdmin()}
         ${renderAudit()}
@@ -1512,6 +1606,7 @@
       ${intro} <span class="small muted" style="margin-left:6px">${esc(imp.fileName)}</span>
       <form data-submit="import-trello" style="margin-top:18px;max-width:640px">
         <label class="field"><span>Nome do quadro no sistema</span><input class="input" name="title" value="${esc(imp.data.name || '')}" maxlength="80" required></label>
+        ${areasOn() && myWorkspaces().length ? wsField((myWorkspaces()[0] || {}).id) : ''}
         <div class="notice">
           Encontrado no arquivo: <b>${s.lists}</b> listas${s.listsArch ? ` (${s.listsArch} arquivadas)` : ''},
           <b>${s.cards}</b> cartões${s.cardsArch ? ` (${s.cardsArch} arquivados)` : ''},
@@ -1709,6 +1804,13 @@
   }
 
   const AUDIT_TEXT = {
+    workspace_created: (t, d) => `criou a área de trabalho <b>${esc(d.name)}</b>`,
+    workspace_renamed: (t, d) => `renomeou a área <b>${esc(d.from)}</b> para <b>${esc(d.to)}</b>`,
+    workspace_deleted: (t, d) => `excluiu a área de trabalho <b>${esc(d.name)}</b>`,
+    workspace_member_added: (t, d) => `incluiu ${t} na área <b>${esc(d.workspace)}</b>${d.role === 'admin' ? ' como administrador da área' : ''}`,
+    workspace_member_role: (t, d) => `${d.to === 'admin' ? 'tornou' : 'tirou'} ${t} ${d.to === 'admin' ? 'administrador' : 'da administração'} da área <b>${esc(d.workspace)}</b>`,
+    workspace_member_removed: (t, d) => `removeu ${t} da área <b>${esc(d.workspace)}</b>`,
+    board_access_taken: (t, d) => `assumiu o acesso ao quadro <b>${esc(d.board)}</b> como dono. Motivo: ${esc(d.reason || '')}`,
     user_created: (t) => `criou a conta de ${t} com senha provisória`,
     pre_registration_created: (t) => `fez o pré-cadastro de ${t}`,
     pre_registration_cancelled: (t) => `cancelou o pré-cadastro de ${t}`,
@@ -1759,6 +1861,105 @@
       </tbody></table></div>`;
   }
 
+  // ---------- Áreas de trabalho e quadros (Administração) ----------
+  function renderAreasAdmin() {
+    if (!areasOn()) return `<section class="panel" style="margin-bottom:20px"><h2>${icon('users')} Áreas de trabalho</h2><div class="notice">Para usar áreas de trabalho e escolher quem vê cada quadro, execute o arquivo <b>atualizacao-07-areas.sql</b> no SQL Editor do Supabase.</div></section>`;
+    const boards = S.admin.allBoards || [];
+    const def = S.admin.cfg.default_workspace;
+    const nb = (w) => boards.filter((b) => b.workspace_id === w).length;
+    const nm = (w) => (S.wsMembers || []).filter((m) => m.workspace_id === w).length;
+    const shown = boards;
+    return `
+      <section class="panel" style="margin-bottom:20px">
+        <h2>${icon('users')} Áreas de trabalho <span class="spacer"></span><button class="btn primary sm" data-act="ws-new">${icon('plus', 14)} Nova área</button></h2>
+        <p class="small muted" style="margin:0 0 8px;line-height:1.5">Cada quadro pertence a uma área. Membros da área criam quadros nela e veem os quadros marcados como visíveis para a área. Usuários aprovados entram automaticamente na área padrão.</p>
+        <div class="table-wrap"><table class="table"><tbody>
+          ${(S.workspaces || []).map((w) => `
+            <tr>
+              <td><div class="row"><span class="ws-mark sm" style="background:${safeColor(w.color)}">${esc(initials(w.name))}</span><div><div style="font-weight:600">${esc(w.name)}${w.id === def ? ' <span class="status active" style="margin-left:4px">Padrão</span>' : ''}</div><div class="small muted">${nm(w.id)} membro(s) · ${nb(w.id)} quadro(s)</div></div></div></td>
+              <td style="text-align:right;white-space:nowrap"><button class="btn sm" data-act="ws-open" data-id="${w.id}">Gerenciar</button></td>
+            </tr>`).join('') || '<tr><td class="empty">Nenhuma área criada.</td></tr>'}
+        </tbody></table></div>
+      </section>
+      <section class="panel" style="margin-bottom:20px">
+        <h2>${icon('board')} Todos os quadros (${boards.length})</h2>
+        <p class="small muted" style="margin:0 0 8px;line-height:1.5">Você vê aqui só o nome, a área e os donos. O conteúdo de um quadro aparece apenas para quem participa dele. Se um quadro ficar sem dono ativo, use <b>Assumir acesso</b>: a ação fica registrada no histórico de administração com o motivo.</p>
+        ${boards.length > 8 ? `<input class="input" style="margin-bottom:8px" placeholder="Filtrar por quadro, área ou dono" data-input="admin-board-filter">` : ''}
+        <div class="table-wrap admin-boards"><table class="table">
+          <thead><tr><th>Quadro</th><th class="hide-sm">Área</th><th>Visibilidade</th><th class="hide-sm">Donos</th><th style="text-align:right"></th></tr></thead>
+          <tbody>${shown.map((b) => `
+            <tr data-search="${esc(normSearch(`${b.title} ${b.workspace} ${b.owners}`))}">
+              <td><div class="row"><i style="width:10px;height:10px;border-radius:3px;background:${safeColor(b.color)};flex:none"></i><div><div style="font-weight:600">${esc(b.title)}${b.archived ? ' <span class="muted small">(arquivado)</span>' : ''}</div><div class="small muted">${b.members} membro(s)</div></div></div></td>
+              <td class="hide-sm small">${esc(b.workspace)}</td>
+              <td class="small">${VIS[b.visibility] ? `${icon(VIS[b.visibility].icon, 12)} ${VIS[b.visibility].label}` : ''}</td>
+              <td class="hide-sm small">${esc(b.owners || 'Sem dono')}</td>
+              <td style="text-align:right;white-space:nowrap">${b.is_member || b.visibility === 'org' || (b.visibility === 'workspace' && myWsRole(b.workspace_id)) ? `<a class="btn sm" href="#/b/${b.id}">Abrir</a>` : ''}${b.is_member ? '' : ` <button class="btn sm" data-act="take-board" data-id="${b.id}">Assumir acesso</button>`}</td>
+            </tr>`).join('')}</tbody>
+        </table></div>
+      </section>`;
+  }
+
+  async function openWsModal(id) {
+    const w = (S.workspaces || []).find((x) => x.id === id);
+    if (!w) return;
+    const members = await q(sb.from('workspace_members').select('*').eq('workspace_id', id));
+    S.wsMembers = (S.wsMembers || []).filter((m) => m.workspace_id !== id).concat(members);
+    const manage = canManageWs(id);
+    const isDefault = S.admin && S.admin.cfg && S.admin.cfg.default_workspace === id;
+    const inWs = new Set(members.map((m) => m.user_id));
+    const cand = Object.values(S.profiles).filter((p) => p.status === 'active' && !inWs.has(p.id)).sort((a, b) => a.full_name.localeCompare(b.full_name));
+    const sorted = members.slice().sort((a, b) => userName(a.user_id).localeCompare(userName(b.user_id)));
+    openModal(`
+      <div class="modal"><button class="icon-btn modal-close" data-act="close-modal">${icon('x')}</button>
+      <div class="modal-body">
+        <h3>${icon('users')} ${esc(w.name)}</h3>
+        ${manage ? `
+        <form data-submit="ws-save" data-id="${w.id}">
+          <div class="row wrap" style="gap:12px;align-items:flex-start">
+            <label class="field" style="flex:1 1 240px"><span>Nome da área</span><input class="input" name="name" value="${esc(w.name)}" required maxlength="60"></label>
+            <label class="field" style="flex:2 1 300px"><span>Descrição (opcional)</span><input class="input" name="description" value="${esc(w.description || '')}" maxlength="200"></label>
+          </div>
+          <div class="field"><span>Cor</span>
+            <div class="color-row">${BOARD_COLORS.map((c) => `<button type="button" class="swatch ${c === w.color ? 'sel' : ''}" style="background:${c}" data-act="pick-swatch" data-color="${c}"></button>`).join('')}</div>
+            <input type="hidden" name="color" value="${safeColor(w.color)}">
+          </div>
+          ${S.me.is_admin ? `<label class="row small" style="cursor:pointer;margin-bottom:12px"><input type="checkbox" name="is_default" ${isDefault ? 'checked' : ''}> Área padrão: usuários aprovados entram nela automaticamente</label>` : ''}
+          <button class="btn primary sm" type="submit">Salvar</button>
+        </form>` : `<p class="muted" style="margin-top:0">${esc(w.description || '')}</p>`}
+        <h4 style="margin:20px 0 8px;font-size:14px">Membros (${members.length})</h4>
+        ${sorted.map((m) => {
+          const p = S.profiles[m.user_id] || {};
+          return `<div class="member-row">${avatar(m.user_id)}
+            <div class="nm"><div style="font-weight:600">${esc(p.full_name || 'Usuário')}${m.user_id === S.me.id ? ' <span class="muted small">(você)</span>' : ''}</div><div class="small muted">${esc(p.email || '')}</div></div>
+            ${manage ? `<select class="select" data-change="ws-member-role" data-ws="${w.id}" data-user="${m.user_id}">
+                <option value="member" ${m.role === 'member' ? 'selected' : ''}>Membro</option>
+                <option value="admin" ${m.role === 'admin' ? 'selected' : ''}>Administrador da área</option></select>
+              <button class="icon-btn" data-act="ws-member-remove" data-ws="${w.id}" data-user="${m.user_id}" title="Remover da área">${icon('x')}</button>`
+            : `<span class="small muted">${m.role === 'admin' ? 'Administrador da área' : 'Membro'}</span>`}
+          </div>`;
+        }).join('') || '<p class="empty">Nenhum membro.</p>'}
+        ${manage ? (cand.length ? `
+          <form data-submit="ws-add-member" data-id="${w.id}" class="row wrap" style="gap:8px;margin-top:12px;align-items:flex-end">
+            <label class="field" style="flex:1 1 260px;margin:0"><span>Adicionar servidor</span><select class="select" name="user" required>
+              <option value="">Selecione...</option>${cand.map((p) => `<option value="${p.id}">${esc(p.full_name)} (${esc(p.email)})</option>`).join('')}</select></label>
+            <select class="select" name="role" style="width:auto"><option value="member">Membro</option><option value="admin">Administrador da área</option></select>
+            <button class="btn primary" type="submit">Adicionar</button>
+          </form>` : '<p class="small muted">Todos os usuários ativos já participam desta área.</p>') : ''}
+        <div class="notice" style="margin-top:16px"><b>Membro</b> cria quadros nesta área e vê os quadros marcados como visíveis para a área. <b>Administrador da área</b> também gerencia os membros dela. Sair da área não remove a pessoa dos quadros em que foi adicionada diretamente.</div>
+        <div class="row" style="margin-top:12px">
+          ${inWs.has(S.me.id) ? `<button class="btn" data-act="ws-leave" data-id="${w.id}">${icon('logout', 14)} Sair da área</button>` : ''}
+          <span class="spacer"></span>
+          ${S.me.is_admin ? `<button class="btn danger" data-act="ws-delete" data-id="${w.id}">${icon('trash', 14)} Excluir área</button>` : ''}
+        </div>
+      </div></div>`);
+  }
+
+  async function afterWsChange(reopen) {
+    if (location.hash.startsWith('#/admin')) await showAdmin(); else await showHome();
+    if (reopen) await openWsModal(reopen);
+  }
+
+  const normSearch = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
   const AUDIT_RECENT = 5;
   function renderAudit() {
     const list = S.admin.audit;
@@ -1793,7 +1994,7 @@
             <label class="choice"><input type="radio" name="mode" value="pre">
               <div><b>Pré-cadastro</b><div class="small muted">A pessoa cria a própria senha em "Criar conta" no site, usando este e-mail, e entra já aprovada e nos quadros escolhidos. Nenhuma senha passa por você.</div></div></label>
           </div>
-          <label class="row" style="margin-bottom:14px;cursor:pointer"><input type="checkbox" name="is_admin"> Administrador do sistema (vê e gerencia todos os quadros e usuários)</label>
+          <label class="row" style="margin-bottom:14px;cursor:pointer"><input type="checkbox" name="is_admin"> Administrador do sistema (gerencia usuários, áreas, templates e cadastros)</label>
           <div class="field"><span>Quadros e papel</span>
             ${boards.length ? `<div class="table-wrap" style="max-height:260px;overflow-y:auto;border:1px solid var(--line);border-radius:8px"><table class="table" style="margin:0"><tbody>
               ${boards.map((b) => `<tr><td>${esc(b.title)}${b.archived ? ' <span class="muted small">(arquivado)</span>' : ''}</td><td style="width:170px">
@@ -1861,7 +2062,7 @@
   };
   const CHOICE = (t) => t === 'checkbox' || t === 'radio' || t === 'select';
   const boardTemplates = () => (S.templates || []).filter((t) => t.active && (t.all_boards || (t.boards || []).includes(S.board.id)));
-  const canUseTemplates = () => !!S.role && !S.board.archived && boardTemplates().length > 0;
+  const canUseTemplates = () => isBoardMember() && !S.board.archived && boardTemplates().length > 0;
 
   function slugKey(label, used) {
     let base = String(label || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
@@ -2683,7 +2884,45 @@
     },
 
     // início
-    'new-board': () => openNewBoardModal(),
+    'new-board': (el) => openNewBoardModal(el.dataset.ws),
+    'ws-open': (el) => openWsModal(el.dataset.id),
+    'ws-new': () => openModal(`
+      <div class="modal sm"><button class="icon-btn modal-close" data-act="close-modal">${icon('x')}</button>
+      <div class="modal-body"><h3>Nova área de trabalho</h3>
+        <form data-submit="ws-create">
+          <label class="field"><span>Nome</span><input class="input" name="name" required maxlength="60" data-autofocus placeholder="Ex.: Núcleo 1, Climatização"></label>
+          <label class="field"><span>Descrição (opcional)</span><input class="input" name="description" maxlength="200"></label>
+          <p class="small muted" style="line-height:1.5">Você entra como administrador da área. Depois, adicione os membros.</p>
+          <div class="row"><button class="btn primary" type="submit">Criar área</button><button class="btn" type="button" data-act="close-modal">Cancelar</button></div>
+        </form></div></div>`),
+    'ws-member-remove': async (el) => {
+      if (!(await confirmDialog(`Remover <b>${esc(userName(el.dataset.user))}</b> da área? A pessoa deixa de ver os quadros visíveis só para a área, mas continua nos quadros em que foi adicionada diretamente.`, { confirmText: 'Remover', danger: true }))) return;
+      await q(sb.from('workspace_members').delete().eq('workspace_id', el.dataset.ws).eq('user_id', el.dataset.user));
+      toast('Membro removido da área.');
+      await afterWsChange(el.dataset.ws);
+    },
+    'ws-leave': async (el) => {
+      if (!(await confirmDialog('Sair desta área? Você deixa de ver os quadros visíveis só para a área e não poderá criar quadros nela.', { confirmText: 'Sair', danger: true }))) return;
+      await q(sb.from('workspace_members').delete().eq('workspace_id', el.dataset.id).eq('user_id', S.me.id));
+      closeModal(); await afterWsChange();
+    },
+    'ws-delete': async (el) => {
+      const w = S.workspaces.find((x) => x.id === el.dataset.id);
+      if (!(await confirmDialog(`Excluir a área <b>${esc(w.name)}</b>? Só é possível quando ela não tem quadros.`, { confirmText: 'Excluir', danger: true }))) return;
+      await q(sb.from('workspaces').delete().eq('id', w.id));
+      toast('Área excluída.'); closeModal(); await afterWsChange();
+    },
+    'take-board': (el) => {
+      const b = (S.admin.allBoards || []).find((x) => x.id === el.dataset.id);
+      openModal(`
+        <div class="modal sm"><button class="icon-btn modal-close" data-act="close-modal">${icon('x')}</button>
+        <div class="modal-body"><h3>Assumir acesso ao quadro</h3>
+          <p style="line-height:1.5">Você passará a ser <b>dono</b> de <b>${esc(b.title)}</b> e verá todo o conteúdo. Esta ação fica registrada no histórico de administração, com o seu nome e o motivo, e aparece para os membros do quadro.</p>
+          <form data-submit="take-board" data-id="${b.id}">
+            <label class="field"><span>Motivo</span><textarea class="textarea" name="reason" required maxlength="300" data-autofocus placeholder="Ex.: dono se aposentou e o quadro ficou sem responsável"></textarea></label>
+            <div class="row"><button class="btn primary" type="submit">Assumir acesso</button><button class="btn" type="button" data-act="close-modal">Cancelar</button></div>
+          </form></div></div>`);
+    },
     'toggle-archived-boards': () => { S.showArchivedBoards = !S.showArchivedBoards; renderHome(); },
     'goto-card': (el) => go(`#/b/${el.dataset.board}/c/${el.dataset.id}`),
 
@@ -2852,7 +3091,7 @@
         await q(sb.from('board_members').delete().eq('board_id', S.board.id).eq('user_id', uid));
         await q(sb.from('card_assignees').delete().eq('board_id', S.board.id).eq('user_id', uid));
       }
-      if (self && !S.me.is_admin) return go('#/');
+      if (self) return go('#/');
       await refreshBoard();
     },
     'leave-board': async () => {
@@ -3136,7 +3375,9 @@
       route();
     },
     'create-board': async (f) => {
-      const row = await q(sb.from('boards').insert({ title: f.title.value.trim(), description: f.description.value.trim(), color: f.color.value, created_by: S.me.id }).select().single());
+      const data = { title: f.title.value.trim(), description: f.description.value.trim(), color: f.color.value, created_by: S.me.id };
+      if (f.elements.workspace) { data.workspace_id = f.elements.workspace.value; data.visibility = f.querySelector('[name=visibility]:checked').value; }
+      const row = await q(sb.from('boards').insert(data).select().single());
       closeModal();
       go(`#/b/${row.id}`);
     },
@@ -3165,8 +3406,37 @@
       if (title && l && title !== l.title) { l.title = title; renderBoard(); await q(sb.from('lists').update({ title }).eq('id', id)); }
       else renderBoard();
     },
+    'ws-create': async (f) => {
+      const row = await q(sb.from('workspaces').insert({ name: f.name.value.trim(), description: f.description.value.trim(), created_by: S.me.id }).select().single());
+      toast('Área criada. Agora adicione os membros.');
+      await afterWsChange(row.id);
+    },
+    'ws-save': async (f) => {
+      const id = f.dataset.id;
+      await q(sb.from('workspaces').update({ name: f.name.value.trim(), description: f.description.value.trim(), color: f.color.value }).eq('id', id));
+      if (f.elements.is_default) {
+        const cur = S.admin && S.admin.cfg ? S.admin.cfg.default_workspace : (await q(sb.from('app_config').select('default_workspace').eq('id', 1).maybeSingle()) || {}).default_workspace;
+        const want = f.elements.is_default.checked ? id : (cur === id ? null : cur);
+        if (want !== cur) await q(sb.from('app_config').update({ default_workspace: want }).eq('id', 1));
+      }
+      toast('Área atualizada.');
+      await afterWsChange(id);
+    },
+    'ws-add-member': async (f) => {
+      if (!f.user.value) return;
+      await q(sb.from('workspace_members').insert({ workspace_id: f.dataset.id, user_id: f.user.value, role: f.role.value }));
+      toast('Membro adicionado à área.');
+      await afterWsChange(f.dataset.id);
+    },
+    'take-board': async (f) => {
+      await q(sb.rpc('admin_take_board', { p_board: f.dataset.id, p_reason: f.reason.value.trim() }));
+      closeModal(); toast('Acesso assumido. A ação foi registrada.');
+      go(`#/b/${f.dataset.id}`);
+    },
     'board-settings': async (f) => {
-      await q(sb.from('boards').update({ title: f.title.value.trim(), description: f.description.value.trim(), color: f.color.value }).eq('id', S.board.id));
+      const data = { title: f.title.value.trim(), description: f.description.value.trim(), color: f.color.value };
+      if (f.elements.workspace) { data.workspace_id = f.elements.workspace.value; data.visibility = f.querySelector('[name=visibility]:checked').value; }
+      await q(sb.from('boards').update(data).eq('id', S.board.id));
       toast('Quadro atualizado.');
       await refreshBoard();
     },
@@ -3258,7 +3528,9 @@
       const btn = f.querySelector('[type=submit]');
       btn.disabled = true; btn.textContent = 'Importando...';
       try {
-        const boardId = await q(sb.rpc('import_board', { payload }));
+        const boardId = f.elements.workspace
+          ? await q(sb.rpc('import_board_to', { p_workspace: f.elements.workspace.value, payload }))
+          : await q(sb.rpc('import_board', { payload }));
         S.imp = null;
         toast(`Quadro importado: ${payload.cards.length} cartões.`);
         go(`#/b/${boardId}`);
@@ -3366,6 +3638,10 @@
   // ------------------------------------------------------------------------
   const C = {
     filter: (el) => { S.filters[el.dataset.key] = el.value; renderBoard(); },
+    'ws-member-role': async (el) => {
+      try { await q(sb.from('workspace_members').update({ role: el.value }).eq('workspace_id', el.dataset.ws).eq('user_id', el.dataset.user)); toast('Papel na área atualizado.'); }
+      finally { await afterWsChange(el.dataset.ws); }
+    },
     'member-role': async (el) => {
       try { await q(sb.from('board_members').update({ role: el.value }).eq('board_id', S.board.id).eq('user_id', el.dataset.user)); toast('Papel atualizado.'); }
       finally { await refreshBoard(); }
@@ -3489,6 +3765,10 @@
         const n = $('[data-input="filter-q"]');
         if (n) { n.focus(); n.setSelectionRange(pos, pos); }
       }, 250);
+    }
+    if (el.dataset.input === 'admin-board-filter') {
+      const words = normSearch(el.value).split(' ').filter(Boolean);
+      $$('.admin-boards tbody tr').forEach((tr) => { tr.hidden = !words.every((w) => tr.dataset.search.includes(w)); });
     }
     if (el.classList.contains('cm-title')) autosize(el);
   });

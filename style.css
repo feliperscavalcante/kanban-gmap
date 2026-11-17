@@ -414,3 +414,14 @@ a { color: var(--primary); }
 .audit-older { margin-top: 4px; }
 .audit-scroll { max-height: 420px; overflow-y: auto; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 4px 6px 8px 0; margin-bottom: 8px; }
 .audit-toggle { justify-content: center; }
+
+/* ---------- Áreas de trabalho ---------- */
+.ws-block { margin-bottom: 26px; }
+.ws-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.ws-name { font-weight: 700; font-size: 15px; color: var(--ink); }
+.ws-mark { width: 32px; height: 32px; border-radius: 8px; color: #fff; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px; flex: none; }
+.ws-mark.sm { width: 26px; height: 26px; font-size: 11px; border-radius: 6px; }
+.board-tile { position: relative; }
+.tile-vis { position: absolute; top: 8px; right: 8px; opacity: .85; display: inline-flex; }
+.role-chip svg { vertical-align: -2px; }
+.choice b svg { vertical-align: -2px; }
